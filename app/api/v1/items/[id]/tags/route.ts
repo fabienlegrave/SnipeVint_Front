@@ -16,8 +16,9 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const id = parseInt(params.id)
-    if (isNaN(id)) {
+    // Les IDs Vinted sont des bigint, utiliser directement la string ou BigInt
+    const itemId = params.id
+    if (!itemId || isNaN(Number(itemId))) {
       return NextResponse.json({ error: 'Invalid item ID' }, { status: 400 })
     }
 
@@ -25,10 +26,11 @@ export async function GET(
       return NextResponse.json({ error: 'Database not available' }, { status: 500 })
     }
 
+    // Utiliser directement la string pour les bigint (Supabase gère la conversion)
     const { data: tags, error } = await supabase
       .from('item_tags')
       .select('tag_name, color')
-      .eq('item_id', id)
+      .eq('item_id', itemId)
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -57,8 +59,9 @@ export async function POST(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const id = parseInt(params.id)
-    if (isNaN(id)) {
+    // Les IDs Vinted sont des bigint, utiliser directement la string
+    const itemId = params.id
+    if (!itemId || isNaN(Number(itemId))) {
       return NextResponse.json({ error: 'Invalid item ID' }, { status: 400 })
     }
 
@@ -80,7 +83,7 @@ export async function POST(
     const { data: item, error: itemError } = await supabase
       .from('vinted_items')
       .select('id')
-      .eq('id', id)
+      .eq('id', itemId)
       .single()
 
     if (itemError || !item) {
@@ -91,7 +94,7 @@ export async function POST(
     const { data: tag, error } = await supabase
       .from('item_tags')
       .upsert({
-        item_id: id,
+        item_id: itemId,
         tag_name: tag_name.trim(),
         color: color || '#3B82F6'
       }, {
@@ -105,7 +108,7 @@ export async function POST(
       return NextResponse.json({ error: 'Database error' }, { status: 500 })
     }
 
-    logger.db.success(`Tag "${tag_name}" added to item ${id}`)
+    logger.db.success(`Tag "${tag_name}" added to item ${itemId}`)
     return NextResponse.json({ tag })
   } catch (error: unknown) {
     logger.error('API error', error as Error)
@@ -127,8 +130,9 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const id = parseInt(params.id)
-    if (isNaN(id)) {
+    // Les IDs Vinted sont des bigint, utiliser directement la string
+    const itemId = params.id
+    if (!itemId || isNaN(Number(itemId))) {
       return NextResponse.json({ error: 'Invalid item ID' }, { status: 400 })
     }
 
@@ -146,7 +150,7 @@ export async function DELETE(
     const { error } = await supabase
       .from('item_tags')
       .delete()
-      .eq('item_id', id)
+      .eq('item_id', itemId)
       .eq('tag_name', tag_name)
 
     if (error) {
@@ -154,7 +158,7 @@ export async function DELETE(
       return NextResponse.json({ error: 'Database error' }, { status: 500 })
     }
 
-    logger.db.success(`Tag "${tag_name}" removed from item ${id}`)
+    logger.db.success(`Tag "${tag_name}" removed from item ${itemId}`)
     return NextResponse.json({ success: true })
   } catch (error: unknown) {
     logger.error('API error', error as Error)

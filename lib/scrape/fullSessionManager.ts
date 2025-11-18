@@ -11,17 +11,25 @@ export interface FullVintedSession {
 
 /**
  * Extrait le token et construit une session complète
+ * Accepte les cookies même sans access_token_web (pour cookies Cloudflare/Datadome uniquement)
  */
 export function createFullSessionFromCookies(cookieString: string): FullVintedSession {
-  // Extraire access_token_web de la chaîne de cookies
+  // Extraire access_token_web de la chaîne de cookies (optionnel)
   const tokenMatch = cookieString.match(/access_token_web=([^;]+)/)
+  const accessToken = tokenMatch ? tokenMatch[1] : undefined
   
-  if (!tokenMatch) {
-    throw new Error('Token access_token_web non trouvé dans les cookies')
+  // Si pas de token, vérifier qu'on a au moins des cookies Cloudflare/Datadome
+  if (!accessToken) {
+    const hasCloudflare = cookieString.includes('cf_clearance') || 
+                          cookieString.includes('datadome') ||
+                          cookieString.includes('__cf_bm')
+    if (!hasCloudflare) {
+      throw new Error('Les cookies doivent contenir au moins access_token_web ou des cookies Cloudflare/Datadome')
+    }
   }
   
   return {
-    accessToken: tokenMatch[1],
+    accessToken: accessToken || '', // Peut être vide si seulement cookies Cloudflare
     fullCookieString: cookieString,
     // User-Agent mis à jour pour correspondre au navigateur qui fonctionne (Chrome 141)
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',

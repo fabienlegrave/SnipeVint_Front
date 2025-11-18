@@ -26,18 +26,28 @@ export async function getCookiesForAlertCheck(): Promise<string | null> {
  */
 export async function checkAlerts(maxPages: number = 5): Promise<{
   success: boolean
+  checkedAt: string
   alertsChecked: number
   itemsChecked: number
+  totalItemsChecked?: number
   matches: Array<{
     alertId: number
     alertTitle: string
-    itemId: number
-    itemTitle: string | null
-    itemPrice: number | null
-    itemUrl: string
     matchReason: string
+    item: any
   }>
   updatedAlerts: number[]
+  stats?: {
+    skippedUnavailable: number
+    skippedPrice: number
+    skippedPlatform: number
+    skippedTitle: number
+  }
+  debugInfo?: Array<{
+    alert: string
+    item: string
+    reason: string
+  }>
   error?: string
 }> {
   const cookies = await getCookiesForAlertCheck()

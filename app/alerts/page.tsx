@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Navigation } from '@/components/layout/Navigation'
 import { useToast } from '@/components/ui/toast'
 import { checkAlerts } from '@/lib/utils/alertChecker'
@@ -18,11 +19,50 @@ import { formatPrice } from '@/lib/utils'
 import { DEFAULT_BLUR_PLACEHOLDER, generateColorPlaceholder } from '@/lib/utils/imagePlaceholder'
 import { logger } from '@/lib/logger'
 
+// Mapping des états vers les status_ids de l'API Vinted
+const CONDITION_STATUS_IDS: Record<string, string> = {
+  'neuf': '6,1',
+  'tres_bon_etat': '2',
+  'bon_etat': '3'
+}
+
+const CONDITION_LABELS: Record<string, string> = {
+  'neuf': 'Neuf',
+  'tres_bon_etat': 'Très bon état',
+  'bon_etat': 'Bon état'
+}
+
+// Convertir les status_ids en états sélectionnés
+function statusIdsToConditions(statusIds: string | null): string[] {
+  if (!statusIds) return []
+  const conditions: string[] = []
+  for (const [key, value] of Object.entries(CONDITION_STATUS_IDS)) {
+    const ids = value.split(',').map(id => id.trim())
+    const statusIdsArray = statusIds.split(',').map(id => id.trim())
+    if (ids.every(id => statusIdsArray.includes(id))) {
+      conditions.push(key)
+    }
+  }
+  return conditions
+}
+
+// Convertir les états sélectionnés en status_ids
+function conditionsToStatusIds(conditions: string[]): string | null {
+  if (conditions.length === 0) return null
+  const allIds = new Set<string>()
+  for (const condition of conditions) {
+    const ids = CONDITION_STATUS_IDS[condition]?.split(',').map(id => id.trim()) || []
+    ids.forEach(id => allIds.add(id))
+  }
+  return Array.from(allIds).sort().join(',')
+}
+
 interface PriceAlert {
   id: number
   game_title: string
   platform: string | null
   max_price: number
+  condition: string | null // Stocke les status_ids (ex: "6,1" ou "2" ou "3")
   is_active: boolean
   created_at: string
   updated_at: string
@@ -80,7 +120,8 @@ export default function AlertsPage() {
   const [newAlert, setNewAlert] = useState({
     game_title: '',
     platform: '',
-    max_price: ''
+    max_price: '',
+    conditions: [] as string[] // Array des clés d'états sélectionnés
   })
   const [isChecking, setIsChecking] = useState(false)
   const [lastCheckResult, setLastCheckResult] = useState<CheckResult | null>(null)
@@ -204,7 +245,7 @@ export default function AlertsPage() {
   }, [autoCheckEnabled, activeAlerts.length, checkInterval])
 
   const createMutation = useMutation({
-    mutationFn: async (alert: { game_title: string; platform?: string; max_price: number }) => {
+    mutationFn: async (alert: { game_title: string; platform?: string; max_price: number; condition?: string }) => {
       const response = await fetch('/api/v1/alerts', {
         method: 'POST',
         headers: {
@@ -224,7 +265,7 @@ export default function AlertsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['price-alerts'] })
       setShowCreateForm(false)
-      setNewAlert({ game_title: '', platform: '', max_price: '' })
+      setNewAlert({ game_title: '', platform: '', max_price: '', conditions: [] })
       toast.success('Price alert created')
     },
     onError: (error: Error) => {
@@ -259,14 +300,14 @@ export default function AlertsPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: async ({ id, game_title, platform, max_price }: { id: number; game_title: string; platform?: string; max_price: number }) => {
+    mutationFn: async ({ id, game_title, platform, max_price, condition }: { id: number; game_title: string; platform?: string; max_price: number; condition?: string | null }) => {
       const response = await fetch(`/api/v1/alerts/${id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': API_SECRET
         },
-        body: JSON.stringify({ game_title, platform, max_price })
+        body: JSON.stringify({ game_title, platform, max_price, condition })
       })
 
       if (!response.ok) {
@@ -316,10 +357,12 @@ export default function AlertsPage() {
       return
     }
 
+    const statusIds = conditionsToStatusIds(newAlert.conditions)
     createMutation.mutate({
       game_title: newAlert.game_title.trim(),
       platform: newAlert.platform.trim() || undefined,
-      max_price: parseFloat(newAlert.max_price)
+      max_price: parseFloat(newAlert.max_price),
+      condition: statusIds || undefined
     })
   }
 
@@ -488,7 +531,12 @@ export default function AlertsPage() {
                                 </div>
                                 {match.item.total_item_price && match.item.total_item_price.amount !== match.item.price?.amount && (
                                   <p className="text-xs text-gray-500 mt-1">
-                                    Total: {formatPrice(match.item.total_item_price.amount, match.item.total_item_price.currency_code)}
+                                    Total: {formatPrice(
+                                      typeof match.item.total_item_price.amount === 'string' 
+                                        ? parseFloat(match.item.total_item_price.amount) 
+                                        : match.item.total_item_price.amount,
+                                      match.item.total_item_price.currency_code
+                                    )}
                                   </p>
                                 )}
                                 {/* Fees breakdown */}
@@ -573,13 +621,13 @@ export default function AlertsPage() {
                                     Instant
                                   </Badge>
                                 )}
-                                {match.item.favourite_count > 0 && (
+                                {(match.item.favourite_count ?? 0) > 0 && (
                                   <span className="text-gray-500 flex items-center gap-1">
                                     <Heart className="h-3 w-3" />
                                     {match.item.favourite_count}
                                   </span>
                                 )}
-                                {match.item.view_count > 0 && (
+                                {(match.item.view_count ?? 0) > 0 && (
                                   <span className="text-gray-500 flex items-center gap-1">
                                     <Eye className="h-3 w-3" />
                                     {match.item.view_count}
@@ -715,6 +763,33 @@ export default function AlertsPage() {
                     />
                   </div>
                   
+                  <div>
+                    <Label>Condition (optional)</Label>
+                    <div className="space-y-2 mt-2">
+                      {Object.entries(CONDITION_LABELS).map(([key, label]) => (
+                        <Checkbox
+                          key={key}
+                          id={`condition_${key}`}
+                          checked={newAlert.conditions.includes(key)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setNewAlert(prev => ({
+                                ...prev,
+                                conditions: [...prev.conditions, key]
+                              }))
+                            } else {
+                              setNewAlert(prev => ({
+                                ...prev,
+                                conditions: prev.conditions.filter(c => c !== key)
+                              }))
+                            }
+                          }}
+                          label={label}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  
                   <div className="flex gap-2">
                     <Button
                       type="submit"
@@ -727,7 +802,7 @@ export default function AlertsPage() {
                       variant="outline"
                       onClick={() => {
                         setShowCreateForm(false)
-                        setNewAlert({ game_title: '', platform: '', max_price: '' })
+                        setNewAlert({ game_title: '', platform: '', max_price: '', conditions: [] })
                       }}
                     >
                       Cancel
@@ -757,11 +832,19 @@ export default function AlertsPage() {
                           <form onSubmit={(e) => {
                             e.preventDefault()
                             const formData = new FormData(e.currentTarget)
+                            const selectedConditions: string[] = []
+                            Object.keys(CONDITION_LABELS).forEach(key => {
+                              if (formData.get(`condition_${key}`)) {
+                                selectedConditions.push(key)
+                              }
+                            })
+                            const statusIds = conditionsToStatusIds(selectedConditions)
                             updateMutation.mutate({
                               id: alert.id,
                               game_title: formData.get('game_title') as string,
                               platform: (formData.get('platform') as string) || undefined,
-                              max_price: parseFloat(formData.get('max_price') as string)
+                              max_price: parseFloat(formData.get('max_price') as string),
+                              condition: statusIds || undefined
                             })
                           }} className="space-y-3">
                             <div>
@@ -794,6 +877,23 @@ export default function AlertsPage() {
                                 required
                               />
                             </div>
+                            <div>
+                              <Label>Condition (optional)</Label>
+                              <div className="space-y-2 mt-2">
+                                {Object.entries(CONDITION_LABELS).map(([key, label]) => {
+                                  const selectedConditions = statusIdsToConditions(alert.condition)
+                                  return (
+                                    <Checkbox
+                                      key={key}
+                                      id={`edit_condition_${alert.id}_${key}`}
+                                      name={`condition_${key}`}
+                                      defaultChecked={selectedConditions.includes(key)}
+                                      label={label}
+                                    />
+                                  )
+                                })}
+                              </div>
+                            </div>
                             <div className="flex gap-2">
                               <Button type="submit" size="sm" disabled={updateMutation.isPending}>
                                 {updateMutation.isPending ? 'Saving...' : 'Save'}
@@ -816,6 +916,14 @@ export default function AlertsPage() {
                                 {alert.platform && (
                                   <Badge variant="outline">{alert.platform}</Badge>
                                 )}
+                                {alert.condition && (() => {
+                                  const conditions = statusIdsToConditions(alert.condition)
+                                  return conditions.map(cond => (
+                                    <Badge key={cond} variant="outline">
+                                      {CONDITION_LABELS[cond] || cond}
+                                    </Badge>
+                                  ))
+                                })()}
                                 <Badge className="bg-green-600">
                                   ≤ {alert.max_price}€
                                 </Badge>
@@ -892,6 +1000,14 @@ export default function AlertsPage() {
                             {alert.platform && (
                               <Badge variant="outline">{alert.platform}</Badge>
                             )}
+                            {alert.condition && (() => {
+                              const conditions = statusIdsToConditions(alert.condition)
+                              return conditions.map(cond => (
+                                <Badge key={cond} variant="outline">
+                                  {CONDITION_LABELS[cond] || cond}
+                                </Badge>
+                              ))
+                            })()}
                             <Badge variant="outline">
                               ≤ {alert.max_price}€
                             </Badge>

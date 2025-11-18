@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { game_title, platform, max_price } = await request.json()
+    const { game_title, platform, max_price, condition } = await request.json()
 
     if (!game_title || typeof game_title !== 'string' || game_title.trim().length === 0) {
       return NextResponse.json({ error: 'game_title is required' }, { status: 400 })
@@ -74,6 +74,7 @@ export async function POST(request: NextRequest) {
         game_title: game_title.trim(),
         platform: platform?.trim() || null,
         max_price: max_price,
+        condition: condition?.trim() || null,
         is_active: true
       })
       .select()

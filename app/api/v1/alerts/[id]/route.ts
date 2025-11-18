@@ -39,6 +39,9 @@ export async function PATCH(
     if (body.platform !== undefined) {
       updates.platform = body.platform?.trim() || null
     }
+    if (body.condition !== undefined) {
+      updates.condition = body.condition?.trim() || null
+    }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: 'No valid updates provided' }, { status: 400 })

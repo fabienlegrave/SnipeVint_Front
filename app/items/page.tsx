@@ -132,26 +132,33 @@ export default function ItemsPage() {
     
     try {
       const API_SECRET = process.env.NEXT_PUBLIC_API_SECRET || 'vinted_scraper_secure_2024'
-      const response = await fetch('/api/v1/favorites/toggle', {
-        method: 'POST',
+      
+      // Supprimer l'item de la base de données
+      const response = await fetch(`/api/v1/items/${itemId}`, {
+        method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': API_SECRET
-        },
-        body: JSON.stringify({
-          id: itemId,
-          isFavorite: false
-        })
+        }
       })
 
       if (!response.ok) {
-        throw new Error('Failed to remove favorite')
+        const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }))
+        throw new Error(errorData.error || 'Failed to delete item')
       }
+
+      // Mettre à jour la liste locale
+      setSelectedItems(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(itemId)
+        return newSet
+      })
 
       // Refresh the list
       refetch()
     } catch (error) {
-      console.error('Failed to remove favorite:', error)
+      console.error('Failed to delete item:', error)
+      alert(`Erreur lors de la suppression: ${error instanceof Error ? error.message : 'Erreur inconnue'}`)
     } finally {
       setRemovingIds(prev => {
         const newSet = new Set(prev)

@@ -91,97 +91,177 @@ export async function getPromotedClosetsItems(
     search_text = '',
     platform,
     max_price,
-    per_page = 20,
+    per_page = 50, // Augmenté à 50 pour récupérer plus d'items par page
     order = 'newest_first',
     status_ids = '2,1,6' // Disponible par défaut
   } = params
 
-  // Construire l'URL avec les paramètres
-  const urlParams = new URLSearchParams()
-  urlParams.append('per_page', per_page.toString())
-  urlParams.append('screen_name', 'catalog')
-  urlParams.append('exclude_member_ids', '')
-  urlParams.append('search_session_id', generateSearchSessionId())
-  urlParams.append('catalog_ids', '3026') // 3026 = jeux vidéo
-  urlParams.append('order', order)
-  
-  // Ajouter le texte de recherche si fourni
-  if (search_text.trim()) {
-    urlParams.append('search_text', search_text.trim())
-  }
-  
-  // Ajouter le filtre de plateforme si fourni
-  const platformId = getPlatformId(platform)
-  if (platformId) {
-    urlParams.append('video_game_platform_ids', platformId.toString())
-  }
-  
-  // Ajouter les statuts (disponible, etc.)
-  if (status_ids) {
-    urlParams.append('status_ids', status_ids)
-  }
-  
-  // Ajouter le filtre de prix max si fourni
-  if (max_price && max_price > 0) {
-    urlParams.append('price_to', max_price.toString())
-  }
-
-  const url = `https://www.vinted.fr/api/v2/promoted_closets?${urlParams.toString()}`
-  
-  logger.info(`🔍 Promoted closets API: ${url}`)
+  // Utiliser une Map pour dédupliquer par ID (le même item peut apparaître dans plusieurs closets/pages)
+  const itemsMap = new Map<number, ApiItem>()
+  let currentPage = 1
+  let hasMore = true
+  const maxPages = 20 // Limite de sécurité pour éviter les boucles infinies
 
   try {
-    const headers = buildVintedApiHeaders(session)
-    
-    const response = await fetch(url, {
-      method: 'GET',
-      headers,
-      cache: 'no-store'
-    })
+    while (hasMore && currentPage <= maxPages) {
+      // Construire l'URL avec les paramètres
+      const urlParams = new URLSearchParams()
+      urlParams.append('per_page', per_page.toString())
+      urlParams.append('page', currentPage.toString())
+      urlParams.append('screen_name', 'catalog')
+      urlParams.append('exclude_member_ids', '')
+      urlParams.append('search_session_id', generateSearchSessionId())
+      urlParams.append('catalog_ids', '3026') // 3026 = jeux vidéo
+      urlParams.append('order', order)
+      
+      // Ajouter le texte de recherche si fourni
+      if (search_text.trim()) {
+        urlParams.append('search_text', search_text.trim())
+      }
+      
+      // Ajouter le filtre de plateforme si fourni
+      const platformId = getPlatformId(platform)
+      if (platformId) {
+        urlParams.append('video_game_platform_ids', platformId.toString())
+      }
+      
+      // Ajouter les statuts (disponible, etc.)
+      if (status_ids) {
+        urlParams.append('status_ids', status_ids)
+      }
+      
+      // Ajouter le filtre de prix max si fourni
+      if (max_price && max_price > 0) {
+        urlParams.append('price_to', max_price.toString())
+      }
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      logger.error(`❌ Promoted closets API error: ${response.status} ${response.statusText}`, new Error(errorText))
-      throw new Error(`API error: ${response.status} ${response.statusText}`)
-    }
+      const url = `https://www.vinted.fr/api/v2/promoted_closets?${urlParams.toString()}`
+      
+      if (currentPage === 1) {
+        logger.info(`🔍 Promoted closets API: ${url}`)
+      } else {
+        logger.info(`📄 Promoted closets API - Page ${currentPage}: ${url}`)
+      }
 
-    const data = await response.json()
-    
-    // La réponse contient promoted_closets avec des items
-    // Utiliser une Map pour dédupliquer par ID (le même item peut apparaître dans plusieurs closets)
-    const itemsMap = new Map<number, ApiItem>()
-    
-    if (data.promoted_closets && Array.isArray(data.promoted_closets)) {
-      for (const closet of data.promoted_closets) {
-        if (closet.items && Array.isArray(closet.items)) {
-          for (const item of closet.items) {
-            try {
-              // Normaliser l'item au format ApiItem
-              const apiItem = normalizePromotedClosetItem(item)
-              const normalizedItem = normalizeApiItem(apiItem)
-              
-              // Dédupliquer par ID (garder le premier trouvé)
-              if (!itemsMap.has(normalizedItem.id)) {
-                itemsMap.set(normalizedItem.id, normalizedItem)
-              } else {
-                logger.debug(`🔄 Item ${normalizedItem.id} déjà présent, ignoré (doublon dans promoted_closets)`)
+      const headers = buildVintedApiHeaders(session)
+      
+      const response = await fetch(url, {
+        method: 'GET',
+        headers,
+        cache: 'no-store'
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        logger.error(`❌ Promoted closets API error: ${response.status} ${response.statusText}`, new Error(errorText))
+        throw new Error(`API error: ${response.status} ${response.statusText}`)
+      }
+
+      const data = await response.json()
+      
+      // La réponse contient promoted_closets avec des items
+      if (data.promoted_closets && Array.isArray(data.promoted_closets)) {
+        for (const closet of data.promoted_closets) {
+          if (closet.items && Array.isArray(closet.items)) {
+            for (const item of closet.items) {
+              try {
+                // Normaliser l'item au format ApiItem
+                const apiItem = normalizePromotedClosetItem(item)
+                const normalizedItem = normalizeApiItem(apiItem)
+                
+                // Dédupliquer par ID (garder le premier trouvé)
+                if (!itemsMap.has(normalizedItem.id)) {
+                  itemsMap.set(normalizedItem.id, normalizedItem)
+                } else {
+                  logger.debug(`🔄 Item ${normalizedItem.id} déjà présent, ignoré (doublon dans promoted_closets)`)
+                }
+              } catch (error) {
+                logger.warn(`⚠️ Failed to normalize item ${item.id}`, error as Error)
               }
-            } catch (error) {
-              logger.warn(`⚠️ Failed to normalize item ${item.id}`, error as Error)
             }
           }
         }
       }
+
+      // Vérifier s'il y a d'autres pages
+      if (data.page_info?.has_more === false) {
+        hasMore = false
+      } else if (data.pagination) {
+        // Alternative : utiliser pagination si page_info n'est pas disponible
+        hasMore = data.pagination.current_page < data.pagination.total_pages
+      } else {
+        // Si aucune info de pagination, arrêter après la première page
+        hasMore = false
+      }
+
+      if (hasMore) {
+        logger.info(`📄 Page ${currentPage} récupérée: ${itemsMap.size} items uniques (has_more: ${data.page_info?.has_more ?? 'N/A'})`)
+        currentPage++
+        
+        // Rate limiting entre les pages
+        await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 300))
+      } else {
+        logger.info(`✅ Dernière page récupérée (page ${currentPage}): ${itemsMap.size} items uniques au total`)
+      }
     }
 
-    const allItems = Array.from(itemsMap.values())
-    const duplicatesRemoved = itemsMap.size < (data.promoted_closets?.reduce((acc: number, closet: any) => acc + (closet.items?.length || 0), 0) || 0)
+    let allItems = Array.from(itemsMap.values())
+    const totalPages = currentPage
     
-    if (duplicatesRemoved) {
-      logger.info(`✅ Promoted closets: ${allItems.length} items uniques récupérés (doublons supprimés)`)
-    } else {
-      logger.info(`✅ Promoted closets: ${allItems.length} items récupérés`)
+    // Filtrer par status_ids si spécifié (l'API peut retourner des items avec d'autres statuts)
+    if (status_ids) {
+      const statusIdsArray = status_ids.split(',').map(id => id.trim())
+      
+      // Mapping du texte de statut vers les status_ids
+      const statusTextToIds: Record<string, string[]> = {
+        'neuf': ['6', '1'],
+        'neuf sans étiquette': ['6', '1'],
+        'très bon état': ['2'],
+        'bon état': ['3']
+      }
+      
+      // Fonction pour obtenir les status_ids d'un item à partir de son statut textuel
+      const getItemStatusIds = (itemStatus: string | null | undefined): string[] => {
+        if (!itemStatus) return []
+        const statusLower = itemStatus.toLowerCase()
+        
+        // Chercher dans le mapping
+        for (const [text, ids] of Object.entries(statusTextToIds)) {
+          if (statusLower.includes(text.toLowerCase())) {
+            return ids
+          }
+        }
+        
+        // Fallback : essayer de détecter depuis le texte
+        if (statusLower.includes('neuf') || statusLower.includes('new') || statusLower.includes('sealed')) {
+          return ['6', '1']
+        }
+        if (statusLower.includes('très bon') || statusLower.includes('excellent')) {
+          return ['2']
+        }
+        if (statusLower.includes('bon état') || statusLower.includes('good')) {
+          return ['3']
+        }
+        
+        return []
+      }
+      
+      // Filtrer les items pour ne garder que ceux dont le status_id correspond
+      const filteredItems = allItems.filter(item => {
+        // Le champ condition contient le texte du statut (ex: "Très bon état")
+        const itemStatusIds = getItemStatusIds(item.condition)
+        // Vérifier si au moins un status_id de l'item est dans la liste demandée
+        return itemStatusIds.length > 0 && itemStatusIds.some(id => statusIdsArray.includes(id))
+      })
+      
+      if (filteredItems.length < allItems.length) {
+        logger.info(`🔍 Filtrage status_ids: ${allItems.length} items → ${filteredItems.length} items (filtrés par status_ids: ${status_ids})`)
+      }
+      
+      allItems = filteredItems
     }
+    
+    logger.info(`✅ Promoted closets: ${allItems.length} items uniques récupérés (${totalPages} page(s) parcourue(s))`)
 
     return {
       items: allItems,

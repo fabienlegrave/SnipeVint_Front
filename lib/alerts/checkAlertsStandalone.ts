@@ -5,10 +5,12 @@
 
 import { supabase } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
-import { getPromotedClosetsItems } from '@/lib/scrape/promotedClosets'
+import { searchAllPagesWithFullSession } from '@/lib/scrape/searchCatalogWithFullSession'
 import { createFullSessionFromCookies } from '@/lib/scrape/fullSessionManager'
 import { extractSmartKeywords } from '@/lib/scrape/smartRelevanceScorer'
 import { vintedItemToApiItem } from '@/lib/utils/vintedItemToApiItem'
+import { sendTelegramNotification, getTelegramConfig } from '@/lib/notifications/telegram'
+import { upsertItemsToDb } from '@/lib/utils/upsertItems'
 import type { VintedItem, ApiItem } from '@/lib/types/core'
 
 interface PriceAlert {
@@ -16,6 +18,7 @@ interface PriceAlert {
   game_title: string
   platform: string | null
   max_price: number
+  condition: string | null
   is_active: boolean
   triggered_count: number
   triggered_at: string | null
@@ -210,6 +213,10 @@ function matchesAlert(item: ApiItem | VintedItem, alert: PriceAlert): { matches:
     }
   }
 
+  // Note: La condition est maintenant filtrée directement par status_ids dans l'API
+  // Donc si un item est retourné, il correspond déjà aux status_ids de l'alerte
+  // On peut donc supprimer cette vérification car elle est redondante
+
   return { 
     matches: true, 
     reason: `Match found: ${item.title} at ${itemPrice}€ (max: ${alert.max_price}€) - ${matchReason}` 
@@ -289,6 +296,7 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
     const matches: AlertMatch[] = []
     const updatedAlerts: number[] = []
     const debugLogs: Array<{ alert: string; item: string; reason: string }> = []
+    const itemsToUpsert: (ApiItem | VintedItem)[] = [] // Collecter tous les items à upsert
 
     let totalChecked = 0
     let skippedUnavailable = 0
@@ -300,23 +308,70 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
       logger.info(`🔍 Vérification alerte: "${alert.game_title}" (platform: ${alert.platform || 'any'}, max: ${alert.max_price}€)`)
       
       try {
-        // Construire les paramètres de recherche pour cette alerte
-        const searchParams = {
-          search_text: alert.game_title,
-          platform: alert.platform,
-          max_price: alert.max_price,
-          per_page: 50, // Récupérer jusqu'à 50 items par alerte
-          order: 'newest_first' as const,
-          status_ids: '2,1,6' // Disponible
-        }
-
-        // Récupérer les items filtrés depuis l'API
-        const { items } = await getPromotedClosetsItems(session, searchParams)
+        // Utiliser l'endpoint /api/v2/catalog/items comme la recherche normale
+        const items = await searchAllPagesWithFullSession(alert.game_title, {
+          priceTo: alert.max_price,
+          limit: 100, // Limite de sécurité pour éviter trop de résultats
+          session
+        })
         
-        logger.info(`📦 ${items.length} items récupérés pour l'alerte "${alert.game_title}"`)
+        logger.info(`📦 ${items.length} items récupérés depuis /api/v2/catalog/items pour l'alerte "${alert.game_title}"`)
+        
+        // Filtrer par status_ids si spécifié (l'API catalog/items ne filtre pas directement par status_ids)
+        let filteredItems = items
+        if (alert.condition) {
+          const statusIdsArray = alert.condition.split(',').map(id => id.trim())
+          
+          // Mapping du texte de statut vers les status_ids
+          const statusTextToIds: Record<string, string[]> = {
+            'neuf': ['6', '1'],
+            'neuf sans étiquette': ['6', '1'],
+            'très bon état': ['2'],
+            'bon état': ['3']
+          }
+          
+          // Fonction pour obtenir les status_ids d'un item à partir de son statut textuel
+          const getItemStatusIds = (itemStatus: string | null | undefined): string[] => {
+            if (!itemStatus) return []
+            const statusLower = itemStatus.toLowerCase()
+            
+            // Chercher dans le mapping
+            for (const [text, ids] of Object.entries(statusTextToIds)) {
+              if (statusLower.includes(text.toLowerCase())) {
+                return ids
+              }
+            }
+            
+            // Fallback : essayer de détecter depuis le texte
+            if (statusLower.includes('neuf') || statusLower.includes('new') || statusLower.includes('sealed')) {
+              return ['6', '1']
+            }
+            if (statusLower.includes('très bon') || statusLower.includes('excellent')) {
+              return ['2']
+            }
+            if (statusLower.includes('bon état') || statusLower.includes('good')) {
+              return ['3']
+            }
+            
+            return []
+          }
+          
+          // Filtrer les items pour ne garder que ceux dont le status_id correspond
+          filteredItems = items.filter(item => {
+            const itemStatusIds = getItemStatusIds(item.condition)
+            return itemStatusIds.length > 0 && itemStatusIds.some(id => statusIdsArray.includes(id))
+          })
+          
+          if (filteredItems.length < items.length) {
+            logger.info(`🔍 Filtrage status_ids: ${items.length} items → ${filteredItems.length} items (filtrés par status_ids: ${alert.condition})`)
+          }
+        }
+        
+        // Utiliser filteredItems si le filtre a été appliqué, sinon items
+        const itemsToCheck = alert.condition ? filteredItems : items
 
         // Vérifier chaque item (le matching est déjà largement fait par l'API, mais on vérifie quand même)
-        for (const item of items) {
+        for (const item of itemsToCheck) {
           totalChecked++
           const matchResult = matchesAlert(item, alert)
           
@@ -353,25 +408,8 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
                 matchReason: matchResult.reason
               })
 
-              // Enregistrer le match dans la table de liaison
-              try {
-                const { error: matchError } = await supabase
-                  .from('alert_matches')
-                  .upsert({
-                    alert_id: alert.id,
-                    item_id: item.id,
-                    match_reason: matchResult.reason
-                  }, {
-                    onConflict: 'alert_id,item_id',
-                    ignoreDuplicates: false
-                  })
-
-                if (matchError) {
-                  logger.warn(`⚠️ Failed to save alert match for alert ${alert.id} / item ${item.id}`, matchError)
-                }
-              } catch (error) {
-                logger.warn(`⚠️ Error saving alert match`, error as Error)
-              }
+              // Ajouter l'item à la liste des items à upsert
+              itemsToUpsert.push(item)
             } else {
               logger.debug(`🔄 Item ${item.id} (${item.title}) déjà dans les matches, ignoré`)
             }
@@ -401,6 +439,68 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
     }
 
     logger.info(`📊 Statistiques de vérification: ${totalChecked} items vérifiés - ${skippedUnavailable} non-disponibles, ${skippedPrice} prix trop élevés, ${skippedPlatform} plateforme non-match, ${skippedTitle} titre non-match, ${matches.length} matches`)
+
+    // 4. Upsert tous les items dans vinted_items AVANT de créer les alert_matches
+    if (itemsToUpsert.length > 0) {
+      logger.info(`💾 Upsert de ${itemsToUpsert.length} items dans vinted_items...`)
+      const upsertResult = await upsertItemsToDb(itemsToUpsert)
+      if (upsertResult.success) {
+        logger.info(`✅ ${upsertResult.upserted} items upsertés avec succès`)
+      } else {
+        logger.warn(`⚠️ Erreurs lors de l'upsert: ${upsertResult.errors.length} erreur(s)`)
+      }
+    }
+
+    // 5. Créer les entrées dans alert_matches et envoyer les notifications Telegram
+    for (const match of matches) {
+      try {
+        // Vérifier si ce match existe déjà dans la base de données
+        const { data: existingDbMatch } = await supabase
+          .from('alert_matches')
+          .select('id')
+          .eq('alert_id', match.alertId)
+          .eq('item_id', match.item.id)
+          .single()
+
+        const isNewItem = !existingDbMatch
+
+        // Enregistrer le match dans la table de liaison
+        const { error: matchError } = await supabase
+          .from('alert_matches')
+          .upsert({
+            alert_id: match.alertId,
+            item_id: match.item.id,
+            match_reason: match.matchReason
+          }, {
+            onConflict: 'alert_id,item_id',
+            ignoreDuplicates: false
+          })
+
+        if (matchError) {
+          logger.warn(`⚠️ Failed to save alert match for alert ${match.alertId} / item ${match.item.id}`, matchError)
+        } else if (isNewItem) {
+          // Envoyer une notification Telegram uniquement pour les nouveaux items
+          const telegramConfig = getTelegramConfig()
+          if (telegramConfig) {
+            // Convertir l'item en ApiItem si nécessaire
+            const apiItem: ApiItem = 'price_amount' in match.item
+              ? vintedItemToApiItem(match.item as VintedItem)
+              : match.item as ApiItem
+            
+            await sendTelegramNotification(
+              apiItem,
+              match.alertTitle,
+              match.matchReason,
+              telegramConfig
+            )
+          } else {
+            logger.debug('ℹ️ Configuration Telegram non disponible, notification non envoyée')
+          }
+        }
+      } catch (error) {
+        logger.warn(`⚠️ Error saving alert match for alert ${match.alertId} / item ${match.item.id}`, error as Error)
+      }
+    }
 
     logger.info(`🎯 Vérification terminée: ${matches.length} match(s) trouvé(s) pour ${alerts.length} alerte(s)`)
     

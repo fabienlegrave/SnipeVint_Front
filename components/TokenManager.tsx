@@ -42,6 +42,7 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
   const [renewalLogs, setRenewalLogs] = useState<string[]>([])
   const [isRenewing, setIsRenewing] = useState(false)
   const [isFetchingCookies, setIsFetchingCookies] = useState(false)
+  const [isGeneratingCookies, setIsGeneratingCookies] = useState(false)
   
   // Mode cookies complets uniquement (le token simple ne fonctionne pas)
 
@@ -82,16 +83,49 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
   const checkTokenStatus = async () => {
     setIsLoading(true)
     try {
-      // Récupérer le token actuel depuis le store client
+      // PRIORITÉ : Utiliser les cookies complets s'ils sont disponibles (meilleur pour Cloudflare)
+      // Sinon, utiliser le token
       const currentToken = token || tokenInfo?.token
+      const currentCookies = fullCookies
       
+      // Si on a des cookies complets, les utiliser pour la validation
+      if (currentCookies && currentCookies.trim().length > 0) {
+        const response = await fetch('/api/v1/token/validate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.NEXT_PUBLIC_API_SECRET || '',
+          },
+          body: JSON.stringify({ cookies: currentCookies })
+        })
+        
+        if (response.ok) {
+          const result = await response.json()
+          updateValidation(result)
+        } else {
+          const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }))
+          console.error('❌ Cookie validation failed:', response.status, errorData)
+          updateValidation({
+            isValid: false,
+            error: errorData.error || `HTTP ${response.status}`,
+            details: {
+              statusCode: response.status,
+              message: errorData.details?.message || `Erreur de validation: ${response.statusText}`
+            }
+          })
+        }
+        setIsLoading(false)
+        return
+      }
+      
+      // Fallback : utiliser le token si pas de cookies complets
       if (!currentToken) {
         updateValidation({
           isValid: false,
-          error: 'Aucun token disponible',
+          error: 'Aucun token ou cookies disponibles',
           details: {
             statusCode: 400,
-            message: 'Aucun token trouvé dans le store'
+            message: 'Aucun token ou cookies trouvés dans le store'
           }
         })
         setIsLoading(false)
@@ -140,64 +174,116 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
 
   const validateCookies = async (cookies: string) => {
     try {
-      // Vérifier que c'est bien des cookies complets
-      if (!cookies.includes('access_token_web=')) {
+      // Vérifier que les cookies contiennent au moins des cookies Cloudflare/Datadome
+      // Détection plus robuste : vérifier les noms de cookies complets
+      const cookieLower = cookies.toLowerCase()
+      const hasCloudflare = 
+        cookieLower.includes('cf_clearance=') || 
+        cookieLower.includes('cf_clearance') ||
+        cookieLower.includes('datadome=') ||
+        cookieLower.includes('datadome') ||
+        cookieLower.includes('__cf_bm') ||
+        cookieLower.includes('cf_ob_info')
+      const hasAccessToken = cookies.includes('access_token_web=')
+      
+      // Debug: logger les cookies détectés
+      console.log('🔍 Validation cookies:', {
+        hasCloudflare,
+        hasAccessToken,
+        cookieLength: cookies.length,
+        cookiePreview: cookies.substring(0, 200)
+      })
+      
+      if (!hasCloudflare && !hasAccessToken) {
         return {
           isValid: false,
           error: 'Cookies invalides',
           details: {
             statusCode: 400,
-            message: 'Les cookies doivent contenir access_token_web'
+            message: 'Les cookies doivent contenir au moins cf_clearance, datadome ou access_token_web'
           }
         }
       }
       
-      // Extraire le token pour la validation
+      // Extraire le token si présent
       const tokenMatch = cookies.match(/access_token_web=([^;]+)/)
       const extractedToken = tokenMatch ? tokenMatch[1] : ''
       
-      if (!extractedToken) {
+      // Si on a des cookies Cloudflare/Datadome mais pas access_token_web, c'est OK
+      // (cookies générés via Puppeteer sans connexion)
+      if (hasCloudflare && !hasAccessToken) {
+        // Les cookies Cloudflare/Datadome sont valides même sans access_token_web
+        // On les accepte directement sans validation API (qui peut échouer sans access_token_web)
         return {
-          isValid: false,
-          extractedToken: '',
+          isValid: true,
+          extractedToken: extractedToken || '',
           details: {
-            statusCode: 400,
-            message: 'Token non trouvé dans les cookies'
+            statusCode: 200,
+            message: '✅ Cookies Cloudflare/Datadome valides (access_token_web manquant - connexion requise pour les requêtes authentifiées)',
+            cookiesValidated: true,
+            hasAccessToken: false,
+            hasCloudflare: true
           }
         }
       }
       
-      // Valider les cookies complets via l'endpoint de validation
-      // IMPORTANT: Envoyer les cookies complets, pas juste le token
-      const response = await fetch('/api/v1/token/validate', {
-        method: 'POST',
-        headers: {
-          'x-api-key': process.env.NEXT_PUBLIC_API_SECRET || 'vinted_scraper_secure_2024',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ cookies: cookies }) // Envoyer les cookies complets
-      })
-      
-      const result = await response.json()
-      
-      if (result.isValid) {
-        return {
-          isValid: true,
-          extractedToken: extractedToken,
-          details: {
-            statusCode: 200,
-            message: result.message || '✅ Token valide',
-            cookiesValidated: true
+      // Si on a access_token_web, valider normalement
+      if (hasAccessToken) {
+        if (!extractedToken) {
+          return {
+            isValid: false,
+            extractedToken: '',
+            details: {
+              statusCode: 400,
+              message: 'Token non trouvé dans les cookies'
+            }
           }
         }
-      } else {
-        return {
-          isValid: false,
-          error: result.error || 'Validation échouée',
-          details: {
-            statusCode: result.statusCode || 500,
-            message: result.message || 'Cookies non fonctionnels'
+        
+        // Valider les cookies complets via l'endpoint de validation
+        const response = await fetch('/api/v1/token/validate', {
+          method: 'POST',
+          headers: {
+            'x-api-key': process.env.NEXT_PUBLIC_API_SECRET || 'vinted_scraper_secure_2024',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ cookies: cookies })
+        })
+        
+        const result = await response.json()
+        
+        if (result.isValid) {
+          return {
+            isValid: true,
+            extractedToken: extractedToken,
+            details: {
+              statusCode: 200,
+              message: result.message || '✅ Token valide',
+              cookiesValidated: true
+            }
           }
+        } else {
+          return {
+            isValid: false,
+            error: result.error || 'Validation échouée',
+            details: {
+              statusCode: result.statusCode || 500,
+              message: result.message || 'Cookies non fonctionnels'
+            }
+          }
+        }
+      }
+      
+      // Fallback : cookies Cloudflare valides
+      return {
+        isValid: true,
+        extractedToken: extractedToken || '',
+        details: {
+          statusCode: 200,
+          message: '✅ Cookies Cloudflare/Datadome valides',
+          cookiesValidated: true,
+          hasAccessToken: false,
+          hasCloudflare: true
         }
       }
     } catch (error) {
@@ -356,8 +442,12 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
         addLog('💾 Cookies sauvegardés dans le store')
         addLog('✅ Processus terminé avec succès')
         
-        // Re-vérifier le statut
-        setTimeout(() => checkTokenStatus(), 1000)
+        // Re-vérifier le statut automatiquement après un court délai
+        addLog('🔄 Rafraîchissement automatique du statut...')
+        setTimeout(async () => {
+          await checkTokenStatus()
+          addLog('✅ Statut mis à jour automatiquement')
+        }, 1000)
       } else {
         addLog(`❌ Échec: ${result.error}`)
         if (result.details) {
@@ -370,6 +460,115 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
       logger.error('Erreur lors de la récupération automatique des cookies', error as Error)
     } finally {
       setIsFetchingCookies(false)
+    }
+  }
+
+  const handleGenerateCookies = async () => {
+    setIsGeneratingCookies(true)
+    setRenewalLogs([])
+    
+    const logs: string[] = []
+    const addLog = (message: string) => {
+      const timestamp = new Date().toLocaleTimeString()
+      logs.push(`[${timestamp}] ${message}`)
+      setRenewalLogs([...logs])
+      logger.info(`🤖 Generate Cookies: ${message}`)
+    }
+
+    try {
+      addLog('🤖 Début de la génération des cookies via Puppeteer...')
+      addLog('🌐 Lancement du navigateur headless...')
+      
+      const API_SECRET = process.env.NEXT_PUBLIC_API_SECRET || 'vinted_scraper_secure_2024'
+      
+      const response = await fetch('/api/v1/admin/vinted/generate-cookies', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': API_SECRET
+        },
+        body: JSON.stringify({
+          autoSave: true // Sauvegarder automatiquement en DB
+        })
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }))
+        throw new Error(errorData.error || `HTTP ${response.status}`)
+      }
+      
+      const result = await response.json()
+      
+      if (result.success) {
+        addLog('✅ Cookies générés avec succès!')
+        
+        if (result.cookies) {
+          // result.cookies est une string (format: "cookie1=value1; cookie2=value2; ...")
+          const cookieString = typeof result.cookies === 'string' 
+            ? result.cookies 
+            : Object.entries(result.cookies)
+                .map(([key, value]) => `${key}=${value}`)
+                .join('; ')
+          
+          // Compter le nombre de cookies
+          const cookieCount = cookieString.split(';').length
+          addLog(`🍪 ${cookieCount} cookies récupérés`)
+          addLog(`🔍 Validation des cookies générés (${cookieString.length} caractères)...`)
+          addLog(`🔍 Aperçu: ${cookieString.substring(0, 150)}...`)
+          
+          // Valider les cookies
+          const validation = await validateCookies(cookieString)
+          
+          if (validation.isValid) {
+            addLog('✅ Cookies validés avec succès!')
+            
+            // Avertir si access_token_web est manquant
+            const hasAccessToken = validation.details?.hasAccessToken !== false
+            if (!hasAccessToken) {
+              addLog('⚠️ Note: access_token_web manquant (connexion requise pour requêtes authentifiées)')
+              addLog('💡 Les cookies Cloudflare/Datadome sont valides pour bypasser les protections')
+            }
+            
+            // Sauvegarder dans le store
+            await setToken(
+              validation.extractedToken || '',
+              validation,
+              cookieString
+            )
+            
+            addLog('💾 Cookies sauvegardés dans le store')
+            addLog('✅ Processus terminé avec succès')
+            
+            // Re-vérifier le statut automatiquement après un court délai
+            addLog('🔄 Rafraîchissement automatique du statut...')
+            setTimeout(async () => {
+              await checkTokenStatus()
+              addLog('✅ Statut mis à jour automatiquement')
+            }, 1000)
+            
+            const message = hasAccessToken
+              ? '✅ Cookies générés et sauvegardés avec succès!'
+              : '✅ Cookies Cloudflare/Datadome générés et sauvegardés!\n⚠️ Note: access_token_web manquant - connexion requise pour les requêtes authentifiées'
+            alert(message)
+          } else {
+            addLog(`❌ Validation échouée: ${validation.error}`)
+            alert(`❌ Cookies générés mais validation échouée: ${validation.error}`)
+          }
+        }
+      } else {
+        addLog(`❌ Échec: ${result.error}`)
+        if (result.details) {
+          addLog(`   Détails: ${JSON.stringify(result.details)}`)
+        }
+        alert(`❌ Erreur lors de la génération: ${result.error}`)
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue'
+      addLog(`❌ Erreur: ${errorMessage}`)
+      logger.error('Erreur lors de la génération des cookies', error as Error)
+      alert(`❌ Erreur: ${errorMessage}`)
+    } finally {
+      setIsGeneratingCookies(false)
     }
   }
 
@@ -432,8 +631,12 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
         addLog('💾 Tokens sauvegardés dans le store')
         addLog('✅ Processus terminé avec succès')
         
-        // Re-vérifier le statut
-        setTimeout(() => checkTokenStatus(), 1000)
+        // Re-vérifier le statut automatiquement après un court délai
+        addLog('🔄 Rafraîchissement automatique du statut...')
+        setTimeout(async () => {
+          await checkTokenStatus()
+          addLog('✅ Statut mis à jour automatiquement')
+        }, 1000)
       } else {
         addLog(`❌ Échec: ${result.error}`)
         
@@ -695,6 +898,17 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
               title="Vérifier le statut du token"
             >
               <RefreshCw className={`h-3 w-3 ${isLoading ? 'animate-spin' : ''}`} />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleGenerateCookies}
+              disabled={isGeneratingCookies}
+              className="bg-purple-50 text-purple-700 hover:bg-purple-100 border-purple-300"
+              title="Générer automatiquement les cookies via Puppeteer (bypass Cloudflare/Datadome)"
+            >
+              <RefreshCw className={`h-3 w-3 mr-1 ${isGeneratingCookies ? 'animate-spin' : ''}`} />
+              {isGeneratingCookies ? 'Génération...' : 'Generate Cookies 🤖'}
             </Button>
             {fullCookies && (
               <Button
