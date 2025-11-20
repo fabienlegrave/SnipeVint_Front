@@ -34,6 +34,27 @@
   }
 }
 
+/* Animation amusante pour le cookie en préparation */
+@keyframes cookie-bounce {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-8px) rotate(-10deg);
+  }
+  50% {
+    transform: translateY(-12px) rotate(0deg);
+  }
+  75% {
+    transform: translateY(-8px) rotate(10deg);
+  }
+}
+
+.cookie-baking {
+  animation: cookie-bounce 1s ease-in-out infinite;
+  display: inline-block;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -116,4 +137,25 @@
   *:focus-visible {
     @apply outline-none ring-2 ring-blue-500 ring-offset-2 ring-offset-background;
   }
+}
+
+/* Animation amusante pour le cookie en préparation */
+@keyframes cookie-bounce {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-8px) rotate(-10deg);
+  }
+  50% {
+    transform: translateY(-12px) rotate(0deg);
+  }
+  75% {
+    transform: translateY(-8px) rotate(10deg);
+  }
+}
+
+.cookie-baking {
+  animation: cookie-bounce 1s ease-in-out infinite;
+  display: inline-block;
 }

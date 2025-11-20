@@ -14,8 +14,27 @@ export async function GET(request: NextRequest) {
     // Vérifier l'API key (accepter soit API_SECRET soit NEXT_PUBLIC_API_SECRET)
     const apiKey = request.headers.get('x-api-key')
     const validSecret = process.env.API_SECRET || process.env.NEXT_PUBLIC_API_SECRET
+    
+    // Log pour déboguer (ne pas logger les valeurs réelles en production)
+    if (!apiKey) {
+      console.warn('[Config API] Aucune clé API fournie')
+    }
+    if (!validSecret) {
+      console.warn('[Config API] Aucune clé API valide configurée côté serveur')
+    }
+    if (apiKey && validSecret && apiKey !== validSecret) {
+      console.warn('[Config API] Clé API invalide (les clés ne correspondent pas)')
+    }
+    
     if (!apiKey || !validSecret || apiKey !== validSecret) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return NextResponse.json({ 
+        error: 'Unauthorized',
+        debug: {
+          hasApiKey: !!apiKey,
+          hasValidSecret: !!validSecret,
+          keysMatch: apiKey === validSecret
+        }
+      }, { status: 401 })
     }
 
     // Retourner uniquement les informations de configuration (pas les valeurs sensibles)

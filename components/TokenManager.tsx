@@ -532,6 +532,28 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
             )
             
             addLog('💾 Cookies sauvegardés dans le store')
+            
+            // Sauvegarder aussi dans la base de données pour le worker backend
+            try {
+              const saveResponse = await fetch('/api/v1/admin/cookies/save', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-api-key': API_SECRET,
+                },
+                body: JSON.stringify({ cookies: cookieString }),
+              })
+              
+              if (saveResponse.ok) {
+                addLog('💾 Cookies sauvegardés en base de données pour le worker backend')
+              } else {
+                addLog('⚠️ Impossible de sauvegarder les cookies en base de données (non bloquant)')
+              }
+            } catch (error) {
+              addLog('⚠️ Erreur lors de la sauvegarde en base de données (non bloquant)')
+              // Ne pas bloquer si la sauvegarde en base échoue
+            }
+            
             addLog('✅ Processus terminé avec succès')
             
             // Re-vérifier le statut automatiquement
@@ -816,37 +838,23 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
           </Card>
         )}
         
-        {/* Guide d'utilisation du Cookie Factory */}
-        {fullCookies ? (
+        {/* Section Force Refresh */}
+        {fullCookies && cookieMonitor.analysis?.refreshToken && (
           <div className="p-3 bg-green-50 border border-green-200 rounded-lg mb-4">
             <div className="flex items-start gap-2">
               <CheckCircle className="h-4 w-4 text-green-600 mt-0.5" />
               <div className="text-xs text-green-800 flex-1">
-                <strong>✅ Cookies configurés ! Utilisez le Cookie Factory pour générer de nouveaux cookies</strong>
-                <p className="text-sm text-gray-600 mt-2">
-                  💡 <strong>Astuce:</strong> Si le Cookie Factory ne récupère aucun cookie, cela peut indiquer un blocage IP temporaire suite à des rate limits. 
-                  Solutions: partager votre connexion mobile (hotspot) ou utiliser un VPN pour changer d'IP.
-                </p>
-                <div className="mt-2 space-y-2">
-                  <div className="bg-white p-2 rounded border border-green-200">
-                    <strong className="text-green-700">🏭 Cookie Factory :</strong>
-                    <ul className="list-disc list-inside mt-1 space-y-1 text-green-700">
-                      <li>Génère automatiquement tous les cookies nécessaires (access_token_web, refresh_token_web, datadome, cf_clearance)</li>
-                      <li>Teste automatiquement les endpoints mobiles et web</li>
-                      <li>Basé sur l'article The Web Scraping Club #82</li>
-                    </ul>
-                  </div>
-                  {cookieMonitor.analysis?.refreshToken && (
-                    <div className="bg-white p-2 rounded border border-green-200">
-                      <strong className="text-green-700">🔄 Force Refresh :</strong>
-                      <p className="text-green-700 text-xs mt-1">Utilise refresh_token_web pour renouveler access_token_web automatiquement</p>
-                    </div>
-                  )}
+                <div className="bg-white p-2 rounded border border-green-200">
+                  <strong className="text-green-700">🔄 Force Refresh :</strong>
+                  <p className="text-green-700 text-xs mt-1">Utilise refresh_token_web pour renouveler access_token_web automatiquement</p>
                 </div>
               </div>
             </div>
           </div>
-        ) : (
+        )}
+        
+        {/* Guide d'utilisation si pas de cookies */}
+        {!fullCookies && (
           <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg mb-4">
             <div className="flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-blue-600 mt-0.5" />
@@ -930,8 +938,17 @@ export function TokenManager({ className = '' }: TokenManagerProps) {
               className="bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-300"
               title="Cookie Factory: Génère des cookies frais et teste automatiquement les endpoints mobiles/web (basé sur The Web Scraping Club #82)"
             >
-              <RefreshCw className={`h-3 w-3 mr-1 ${isCookieFactory ? 'animate-spin' : ''}`} />
-              {isCookieFactory ? 'Factory...' : 'Cookie Factory 🏭'}
+              {isCookieFactory ? (
+                <>
+                  <span className="mr-1 cookie-baking">🍪</span>
+                  <span>Cookies en préparation...</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                  Cookie Factory 🏭
+                </>
+              )}
             </Button>
             {cookieMonitor.analysis?.refreshToken && (
               <Button

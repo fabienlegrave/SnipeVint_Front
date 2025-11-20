@@ -30,6 +30,7 @@ interface ConfigStatus {
   performance: {
     scrapeDelay: string
     enrichConcurrency: string
+    requestDelayMs: number
   }
   security: {
     tlsRejectUnauthorized: boolean
@@ -39,11 +40,21 @@ interface ConfigStatus {
 export default function SettingsPage() {
   const [config, setConfig] = useState<ConfigStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const [requestDelay, setRequestDelay] = useState<number>(15000)
+  const [savingDelay, setSavingDelay] = useState(false)
+  const [delaySaved, setDelaySaved] = useState(false)
 
   useEffect(() => {
     async function fetchConfig() {
       try {
         const apiSecret = process.env.NEXT_PUBLIC_API_SECRET
+        
+        // Debug: vérifier les variables NEXT_PUBLIC_* disponibles
+        console.log('🔍 Variables NEXT_PUBLIC_* disponibles:', {
+          hasApiSecret: !!apiSecret,
+          hasSupabaseUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+          hasSupabaseKey: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        })
         
         // Fallback: utiliser les variables NEXT_PUBLIC_* directement si disponibles
         const fallbackConfig: ConfigStatus = {
@@ -70,6 +81,7 @@ export default function SettingsPage() {
           performance: {
             scrapeDelay: '1200',
             enrichConcurrency: '2',
+            requestDelayMs: 15000,
           },
           security: {
             tlsRejectUnauthorized: false,
@@ -91,9 +103,26 @@ export default function SettingsPage() {
 
         if (response.ok) {
           const data = await response.json()
+          console.log('✅ Config récupérée depuis l\'API:', data)
           setConfig(data)
+          
+          // Récupérer le délai des requêtes
+          try {
+            const delayResponse = await fetch('/api/v1/admin/settings/request-delay', {
+              headers: {
+                'x-api-key': apiSecret,
+              },
+            })
+            if (delayResponse.ok) {
+              const delayData = await delayResponse.json()
+              setRequestDelay(delayData.requestDelayMs || 15000)
+            }
+          } catch (error) {
+            console.error('Erreur lors de la récupération du délai:', error)
+          }
         } else {
-          console.error('Erreur lors de la récupération de la config:', response.status)
+          const errorData = await response.json().catch(() => ({}))
+          console.error('❌ Erreur lors de la récupération de la config:', response.status, errorData)
           // En cas d'erreur, utiliser le fallback
           setConfig(fallbackConfig)
         }
@@ -124,6 +153,7 @@ export default function SettingsPage() {
           performance: {
             scrapeDelay: '1200',
             enrichConcurrency: '2',
+            requestDelayMs: 15000,
           },
           security: {
             tlsRejectUnauthorized: false,
@@ -195,10 +225,80 @@ export default function SettingsPage() {
                 {loading ? (
                   <div className="text-sm text-gray-500">Chargement...</div>
                 ) : (
-                  <div className="space-y-2 text-sm text-gray-600">
-                    <p>• Concurrence enrichissement: <span className="font-mono">{config?.performance.enrichConcurrency || '2'}</span></p>
-                    <p>• Délai scraping: <span className="font-mono">{config?.performance.scrapeDelay || '1200'}ms</span></p>
-                    <p>• Mode: <span className="text-blue-600">Conservateur</span></p>
+                  <div className="space-y-4">
+                    <div className="space-y-2 text-sm text-gray-600">
+                      <p>• Concurrence enrichissement: <span className="font-mono">{config?.performance.enrichConcurrency || '2'}</span></p>
+                      <p>• Délai scraping: <span className="font-mono">{config?.performance.scrapeDelay || '1200'}ms</span></p>
+                      <p>• Mode: <span className="text-blue-600">Conservateur</span></p>
+                    </div>
+                    
+                    <div className="pt-4 border-t">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Délai entre requêtes (ms)
+                      </label>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="number"
+                          min="1000"
+                          max="60000"
+                          step="100"
+                          value={requestDelay}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value, 10)
+                            if (!isNaN(value) && value >= 1000 && value <= 60000) {
+                              setRequestDelay(value)
+                              setDelaySaved(false)
+                            }
+                          }}
+                          className="flex h-10 w-32 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        />
+                        <span className="text-sm text-gray-500">
+                          ({requestDelay / 1000}s)
+                        </span>
+                        <button
+                          onClick={async () => {
+                            setSavingDelay(true)
+                            setDelaySaved(false)
+                            try {
+                              const apiSecret = process.env.NEXT_PUBLIC_API_SECRET
+                              if (!apiSecret) {
+                                alert('API Secret non configuré')
+                                return
+                              }
+                              
+                              const response = await fetch('/api/v1/admin/settings/request-delay', {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  'x-api-key': apiSecret,
+                                },
+                                body: JSON.stringify({ requestDelayMs: requestDelay }),
+                              })
+                              
+                              if (response.ok) {
+                                setDelaySaved(true)
+                                setTimeout(() => setDelaySaved(false), 3000)
+                              } else {
+                                const error = await response.json()
+                                alert(`Erreur: ${error.error || 'Impossible de sauvegarder'}`)
+                              }
+                            } catch (error) {
+                              console.error('Erreur lors de la sauvegarde:', error)
+                              alert('Erreur lors de la sauvegarde')
+                            } finally {
+                              setSavingDelay(false)
+                            }
+                          }}
+                          disabled={savingDelay}
+                          className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                        >
+                          {savingDelay ? 'Sauvegarde...' : delaySaved ? '✓ Sauvegardé' : 'Sauvegarder'}
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Délai entre chaque requête API (1000-60000 ms). Valeur actuelle: {requestDelay}ms ({requestDelay / 1000}s)
+                      </p>
+                    </div>
                   </div>
                 )}
               </CardContent>

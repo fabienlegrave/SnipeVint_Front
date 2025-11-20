@@ -1,6 +1,14 @@
 # Dockerfile pour Fly.io (support Puppeteer)
 FROM node:20-slim
 
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_API_SECRET
+
+ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+ENV NEXT_PUBLIC_API_SECRET=${NEXT_PUBLIC_API_SECRET}
+
 # Installer les dépendances système pour Chromium
 RUN apt-get update && apt-get install -y \
     chromium \

@@ -7,6 +7,10 @@ app = 'vinted-last'
 primary_region = 'cdg'
 
 [build]
+[build.args]
+NEXT_PUBLIC_SUPABASE_URL = "https://gmumhsqlewekjlrdsmgf.supabase.co"
+NEXT_PUBLIC_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdtdW1oc3FsZXdla2pscmRzbWdmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg2NzcwOTYsImV4cCI6MjA3NDI1MzA5Nn0.dxUKRE3tctiaHgyXmJTm4MmcCLMgVRjRLhsSuzTxgkI"
+NEXT_PUBLIC_API_SECRET = "vinted_scraper_secure_2024"
 
 [http_service]
   internal_port = 3000
@@ -16,7 +20,23 @@ primary_region = 'cdg'
   min_machines_running = 0
   processes = ['app']
 
+# Configuration pour l'app web (peut s'arrêter)
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
+  processes = ['app']
+
+# Configuration du worker d'alertes (processus séparé qui tourne en continu)
+# IMPORTANT: Le worker doit être déployé séparément avec: fly scale count worker=1
+# Cela créera une machine dédiée qui reste toujours active
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  processes = ['worker']
+
+# Définition des processus
+[processes]
+  app = "npm start"
+  worker = "npm run worker:alerts"

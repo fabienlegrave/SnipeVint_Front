@@ -11,6 +11,7 @@ import { extractSmartKeywords } from '@/lib/scrape/smartRelevanceScorer'
 import { vintedItemToApiItem } from '@/lib/utils/vintedItemToApiItem'
 import { sendTelegramNotificationGrouped, getTelegramConfig } from '@/lib/notifications/telegram'
 import { upsertItemsToDb } from '@/lib/utils/upsertItems'
+import { getRequestDelayWithJitter } from '@/lib/config/delays'
 import type { VintedItem, ApiItem } from '@/lib/types/core'
 
 interface PriceAlert {
@@ -56,6 +57,8 @@ interface CheckAlertsResult {
     reason: string
   }>
   error?: string
+  httpStatus?: number // Code HTTP si erreur (403, 429, etc.)
+  needsCookieRefresh?: boolean // Indique si les cookies doivent être renouvelés
 }
 
 /**
@@ -289,10 +292,14 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
 
     logger.info(`📋 ${alerts.length} alertes actives à vérifier`)
     
-    // Calculer le temps estimé (2 minutes par alerte après la première)
-    const estimatedMinutes = alerts.length > 1 ? (alerts.length - 1) * 2 : 0
-    if (estimatedMinutes > 0) {
-      logger.info(`⏱️ Temps estimé: ~${estimatedMinutes} minute${estimatedMinutes > 1 ? 's' : ''} (2 minutes d'intervalle entre chaque alerte pour éviter les rate limits)`)
+    // Le délai avec jitter sera calculé à chaque fois (12-25s)
+    // Calculer le temps estimé (moyenne de 18.5s par alerte)
+    const avgDelaySeconds = 18.5 // Moyenne entre 12 et 25 secondes
+    const estimatedSeconds = alerts.length > 1 ? (alerts.length - 1) * avgDelaySeconds : 0
+    if (estimatedSeconds > 0) {
+      const minutes = Math.floor(estimatedSeconds / 60)
+      const seconds = Math.round(estimatedSeconds % 60)
+      logger.info(`⏱️ Temps estimé: ~${minutes > 0 ? `${minutes}m ` : ''}${seconds > 0 ? `${seconds}s` : ''} (délai avec jitter: 12-25s entre chaque requête)`)
     }
 
     // 2. Créer la session
@@ -310,16 +317,16 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
     let skippedTitle = 0
     let skippedPlatform = 0
 
-    // Traiter les alertes séquentiellement avec un délai de 2 minutes entre chaque
-    for (let i = 0; i < alerts.length; i++) {
-      const alert = alerts[i]
-      
-      // Ajouter un délai de 2 minutes entre chaque alerte (sauf pour la première)
-      if (i > 0) {
-        const delayMs = 2 * 60 * 1000 // 2 minutes
-        logger.info(`⏳ Attente de ${delayMs / 1000}s avant de traiter la prochaine alerte (${i + 1}/${alerts.length})...`)
-        await new Promise(resolve => setTimeout(resolve, delayMs))
-      }
+      // Traiter les alertes séquentiellement avec un délai de 7,5 secondes entre chaque requête
+      for (let i = 0; i < alerts.length; i++) {
+        const alert = alerts[i]
+        
+        // Ajouter un délai avec jitter entre chaque requête (sauf pour la première)
+        if (i > 0) {
+          const delay = await getRequestDelayWithJitter()
+          logger.info(`⏳ Attente de ${(delay / 1000).toFixed(1)}s avant la prochaine requête (alerte ${i + 1}/${alerts.length})...`)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
       
       logger.info(`🔍 Vérification alerte ${i + 1}/${alerts.length}: "${alert.game_title}" (platform: ${alert.platform || 'any'}, max: ${alert.max_price}€)`)
       
@@ -329,10 +336,19 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
       
       try {
         // Utiliser l'endpoint /api/v2/catalog/items comme la recherche normale
+        // Limité à 100 items max (5 pages) pour éviter les 403
         const items = await searchAllPagesWithFullSession(alert.game_title, {
           priceTo: alert.max_price,
-          limit: 100, // Limite de sécurité pour éviter trop de résultats
+          limit: 100, // Limite de sécurité : 100 items max (5 pages × 20 items)
           session
+        }).catch(async (error: Error) => {
+          // Détecter les erreurs 403/401
+          const errorMessage = error.message || String(error)
+          if (errorMessage.includes('HTTP 403') || errorMessage.includes('403')) {
+            logger.error(`❌ Erreur 403 détectée pour l'alerte "${alert.game_title}"`)
+            throw { is403: true, originalError: error }
+          }
+          throw error
         })
         
         logger.info(`📦 ${items.length} items récupérés depuis /api/v2/catalog/items pour l'alerte "${alert.game_title}"`)
@@ -528,9 +544,32 @@ export async function checkAlertsStandalone(fullCookies: string): Promise<CheckA
             }
           }
         }
-      } catch (error) {
+      } catch (error: any) {
+        // Vérifier si c'est une erreur 403
+        if (error?.is403) {
+          logger.error(`❌ Erreur 403 détectée pour l'alerte "${alert.game_title}" - Arrêt du cycle`)
+          // Arrêter le cycle et retourner l'erreur 403
+          return {
+            success: false,
+            checkedAt: new Date().toISOString(),
+            alertsChecked: i + 1, // Nombre d'alertes vérifiées avant l'erreur
+            itemsChecked: totalChecked,
+            matches: matches.map(m => ({
+              alertId: m.alertId,
+              alertTitle: m.alertTitle,
+              matchReason: m.matchReason,
+              item: 'price_amount' in m.item 
+                ? vintedItemToApiItem(m.item as VintedItem)
+                : m.item as ApiItem
+            })),
+            updatedAlerts,
+            error: 'HTTP 403 - Cookies invalides ou expirés',
+            httpStatus: 403,
+            needsCookieRefresh: true
+          }
+        }
         logger.error(`❌ Erreur lors de la vérification de l'alerte "${alert.game_title}"`, error as Error)
-        // Continuer avec les autres alertes même si une échoue
+        // Continuer avec les autres alertes même si une échoue (sauf pour 403)
       }
     }
 

@@ -4,6 +4,7 @@ import { createSimpleSession, buildFullVintedHeaders, type FullVintedSession } f
 import { filterAndSortByRelevance } from './relevanceScorer'
 // Enrichissement retiré : trop de risques de ban/429 et peu de plus-value
 import { filterAndSortSmart, calculateSmartRelevanceScore, extractSmartKeywords } from './smartRelevanceScorer'
+import { getRequestDelayWithJitter } from '../config/delays'
 import { writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { logger } from '../logger'
@@ -384,7 +385,7 @@ export function normalizeApiItem(apiItem: any): ApiItem {
 export async function searchCatalogWithFullSession(
   params: VintedSearchParams,
   session?: FullVintedSession
-): Promise<{ items: ApiItem[], hasMore: boolean, totalPages?: number }> {
+): Promise<{ items: ApiItem[], hasMore: boolean, totalPages?: number, pagination?: { total_entries?: number } }> {
   const url = buildSearchUrl(params)
   
   // IMPORTANT: Headers EXACTS du navigateur qui fonctionne
@@ -477,7 +478,14 @@ export async function searchCatalogWithFullSession(
 
     // logger.info(`✅ ${items.length} items trouvés, hasMore: ${hasMore}${totalPages ? `, total pages: ${totalPages}` : ''}`)
 
-    return { items, hasMore, totalPages }
+    return { 
+      items, 
+      hasMore, 
+      totalPages,
+      pagination: data.pagination ? {
+        total_entries: data.pagination.total_entries
+      } : undefined
+    }
 
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error)
@@ -506,8 +514,17 @@ export async function searchAllPagesWithFullSession(
   let allItems: ApiItem[] = []
   let currentPage = 1
   let hasMore = true
-  const maxPagesToSearch = 15 // Augmenté à 15 pages pour trouver plus de résultats pertinents
+  // Réduit à 3 pages max pour diviser par ~3 la pression
+  const maxPagesToSearch = 3
   let totalPages = maxPagesToSearch // Valeur par défaut, sera mise à jour après la première requête
+  let totalItemsFromApi: number | null = null // Total items renvoyé par l'API
+  
+  // Seuil pour arrêter si total items faible (moins de 20 items = 1 page suffit)
+  const MIN_TOTAL_ITEMS_THRESHOLD = 20
+  
+  // Seuil d'âge maximum (7 jours) - arrêter si items trop vieux
+  const MAX_ITEM_AGE_DAYS = 7
+  const maxItemAgeMs = MAX_ITEM_AGE_DAYS * 24 * 60 * 60 * 1000
 
   while (hasMore && allItems.length < limit && currentPage <= maxPagesToSearch) {
     const remainingItems = limit - allItems.length
@@ -515,10 +532,10 @@ export async function searchAllPagesWithFullSession(
 
     logger.scrape.page(currentPage, totalPages, perPage)
 
-    // DÉLAI ANTI-DÉTECTION avant chaque requête (augmenté pour éviter les rate limits)
+    // Délai avec jitter (12-25s) avant chaque requête
     if (currentPage > 1) {
-      const delay = 7500 // 7,5 secondes entre chaque page pour éviter les 429
-      logger.info(`⏳ Délai de ${delay / 1000}s avant la page ${currentPage}/${totalPages} (pour éviter les rate limits)`)
+      const delay = await getRequestDelayWithJitter()
+      logger.info(`⏳ Délai de ${(delay / 1000).toFixed(1)}s avant la page ${currentPage}/${totalPages}...`)
       await new Promise(resolve => setTimeout(resolve, delay))
     }
 
@@ -530,10 +547,68 @@ export async function searchAllPagesWithFullSession(
       perPage
     }, session)
 
-    // Mettre à jour totalPages après la première requête si disponible
-    if (currentPage === 1 && result.totalPages) {
-      totalPages = Math.min(result.totalPages, maxPagesToSearch)
-      // logger.info(`📄 Total pages détecté: ${result.totalPages} (limité à ${maxPagesToSearch})`)
+    // Mettre à jour totalPages et totalItems après la première requête
+    if (currentPage === 1) {
+      if (result.totalPages) {
+        totalPages = Math.min(result.totalPages, maxPagesToSearch)
+      }
+      // Si l'API renvoie un total d'items, le stocker
+      if (result.pagination?.total_entries) {
+        totalItemsFromApi = result.pagination.total_entries
+        logger.info(`📊 Total items disponibles: ${totalItemsFromApi}`)
+        
+        // Arrêter si total items faible (moins d'une page)
+        if (totalItemsFromApi < MIN_TOTAL_ITEMS_THRESHOLD) {
+          logger.info(`⏹️ Arrêt de la pagination: seulement ${totalItemsFromApi} items disponibles (< ${MIN_TOTAL_ITEMS_THRESHOLD})`)
+          hasMore = false
+        }
+      }
+    }
+
+    // Vérifier si aucun item candidat sur cette page
+    if (result.items.length === 0) {
+      logger.info(`⏹️ Arrêt de la pagination: aucune page ${currentPage} (page vide)`)
+      hasMore = false
+      break
+    }
+
+    // Vérifier l'âge des items - arrêter si tous les items sont trop vieux
+    const now = Date.now()
+    let allItemsTooOld = true
+    let itemsChecked = 0
+    
+    for (const item of result.items) {
+      if (item.added_since) {
+        itemsChecked++
+        // Parser added_since (format: "il y a X jours/heures" ou ISO date)
+        let itemAgeMs: number | null = null
+        
+        // Essayer de parser comme ISO date
+        try {
+          const itemDate = new Date(item.added_since)
+          if (!isNaN(itemDate.getTime())) {
+            itemAgeMs = now - itemDate.getTime()
+          }
+        } catch (e) {
+          // Si ce n'est pas une date ISO, essayer de parser "il y a X jours"
+          const daysMatch = item.added_since.match(/(\d+)\s*jour/i)
+          if (daysMatch) {
+            itemAgeMs = parseInt(daysMatch[1], 10) * 24 * 60 * 60 * 1000
+          }
+        }
+        
+        if (itemAgeMs !== null && itemAgeMs < maxItemAgeMs) {
+          allItemsTooOld = false
+          break
+        }
+      }
+    }
+    
+    // Si on a vérifié des items et qu'ils sont tous trop vieux, arrêter
+    if (itemsChecked > 0 && allItemsTooOld) {
+      logger.info(`⏹️ Arrêt de la pagination: tous les items de la page ${currentPage} sont trop vieux (> ${MAX_ITEM_AGE_DAYS} jours)`)
+      hasMore = false
+      break
     }
 
     // Dédupliquer par ID avant d'ajouter (éviter les doublons)
@@ -549,9 +624,6 @@ export async function searchAllPagesWithFullSession(
     currentPage++
 
     // logger.info(`📊 Total accumulé: ${allItems.length}/${limit}`)
-    
-    // Note: Le délai de 5 secondes est déjà appliqué au début de la boucle (avant currentPage > 1)
-    // Pas besoin de délai supplémentaire ici
   }
 
   // STRATÉGIE SIMPLIFIÉE : Filtrage intelligent SANS enrichissement

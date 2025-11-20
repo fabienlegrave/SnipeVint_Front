@@ -1,5 +1,13 @@
-# Dockerfile pour le worker d'alertes sur Railway
-FROM node:18-slim
+# Dockerfile pour le worker d'alertes sur Fly.io
+FROM node:20-slim
+
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_API_SECRET
+
+ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+ENV NEXT_PUBLIC_API_SECRET=${NEXT_PUBLIC_API_SECRET}
 
 # Installer les dépendances système pour Chromium
 RUN apt-get update && apt-get install -y \
@@ -57,8 +65,8 @@ RUN npm ci
 # Copier le reste du code
 COPY . .
 
-# Le worker n'a pas besoin de build Next.js
-# Il utilise directement les scripts Node.js
+# Build Next.js pour avoir accès aux types et libs
+RUN npm run build
 
 # Variables d'environnement
 ENV NODE_ENV=production

@@ -1,14 +1,14 @@
 {
-  "name": "vinted-scrap",
-  "version": "0.1.0",
+  "name": "vinted-scraper",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "scrape:once": "node scripts/scrape-once.js",
-    "test:endpoints": "node scripts/test-vinted-endpoints.js"
+    "worker:alerts": "tsx scripts/worker-alerts.ts",
+    "test:failover": "tsx scripts/test-failover.ts"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.0.2",
@@ -26,21 +26,22 @@
     "puppeteer": "^21.11.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "react": "^18",
-    "react-dom": "^18",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "tailwind-merge": "^2.2.1",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.7.0"
   },
   "devDependencies": {
-    "@types/node": "^20",
+    "@types/node": "^20.11.5",
     "@types/node-fetch": "^2.6.13",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
     "autoprefixer": "^10.0.1",
-    "eslint": "^8",
+    "eslint": "^8.57.0",
     "eslint-config-next": "14.1.0",
-    "postcss": "^8",
+    "postcss": "^8.4.33",
     "tailwindcss": "^3.3.0",
-    "typescript": "^5"
+    "typescript": "^5.3.3"
   }
 }

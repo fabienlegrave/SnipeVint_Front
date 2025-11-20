@@ -115,7 +115,7 @@ async function generateCookies() {
       // Attendre et gérer les challenges Cloudflare/Datadome avec plus de patience
       let challengeResolved = false
       let attempts = 0
-      const maxAttempts = 10
+      const maxAttempts = 15 // Augmenté pour plus de patience
       
       while (!challengeResolved && attempts < maxAttempts) {
         attempts++
@@ -126,19 +126,45 @@ async function generateCookies() {
         console.log(`   URL: ${url}`)
         console.log(`   Title: ${title}`)
         
+        // Vérifier les cookies actuels
+        const currentCookies = await page.cookies('https://www.vinted.fr')
+        const hasImportantCookies = currentCookies.some(c => 
+          c.name.includes('cf_') || 
+          c.name.includes('datadome') ||
+          c.name.includes('__cf') ||
+          c.name === 'cf_clearance'
+        )
+        
+        console.log(`   Cookies actuels: ${currentCookies.length} (importants: ${hasImportantCookies ? 'oui' : 'non'})`)
+        
         // Vérifier si on est bloqué par un challenge
         const hasChallenge = title.includes('Just a moment') || 
                             title.includes('Checking your browser') ||
                             title.includes('Please wait') ||
+                            title.includes('Access denied') ||
                             url.includes('challenge') ||
-                            url.includes('datadome')
+                            url.includes('datadome') ||
+                            url.includes('__cf_chl')
         
-        if (hasChallenge) {
-          console.log(`⏳ Challenge détecté (${title}), attente ${10 * attempts}s...`)
-          await page.waitForTimeout(10000 * attempts) // Délai progressif
+        if (hasChallenge && !hasImportantCookies) {
+          const waitTime = Math.min(15000 * attempts, 60000) // Max 60 secondes
+          console.log(`⏳ Challenge détecté (${title}), attente ${waitTime / 1000}s...`)
+          await page.waitForTimeout(waitTime)
+          
+          // Essayer de cliquer sur le bouton "Verify" si présent
+          try {
+            const verifyButton = await page.$('input[type="button"][value*="Verify"], button:has-text("Verify"), #challenge-form input[type="submit"]')
+            if (verifyButton) {
+              console.log('🖱️ Clic sur le bouton Verify...')
+              await verifyButton.click()
+              await page.waitForTimeout(5000)
+            }
+          } catch (e) {
+            // Pas de bouton, continuer
+          }
           
           try {
-            // Attendre que la page se charge
+            // Attendre que la page se charge ou navigue
             await page.waitForNavigation({ 
               waitUntil: 'domcontentloaded', 
               timeout: 30000 
@@ -148,22 +174,42 @@ async function generateCookies() {
           } catch (error) {
             console.log('ℹ️ Navigation timeout, mais continuons...')
           }
-        } else {
-          // Vérifier si on a des cookies maintenant
-          const cookies = await page.cookies('https://www.vinted.fr')
-          const hasImportantCookies = cookies.some(c => 
+          
+          // Re-vérifier les cookies après l'attente
+          const cookiesAfterWait = await page.cookies('https://www.vinted.fr')
+          const hasCookiesNow = cookiesAfterWait.some(c => 
             c.name.includes('cf_') || 
             c.name.includes('datadome') ||
-            c.name.includes('__cf')
+            c.name.includes('__cf') ||
+            c.name === 'cf_clearance'
           )
           
-          if (hasImportantCookies || cookies.length > 5) {
-            console.log(`✅ Challenge résolu ou page chargée (${cookies.length} cookies trouvés)`)
+          if (hasCookiesNow) {
+            console.log(`✅ Cookies Cloudflare générés après attente (${cookiesAfterWait.length} cookies)`)
             challengeResolved = true
             break
-          } else {
-            console.log(`⏳ Pas encore de cookies importants, attente supplémentaire...`)
-            await page.waitForTimeout(5000)
+          }
+        } else if (hasImportantCookies) {
+          console.log(`✅ Challenge résolu ou page chargée (${currentCookies.length} cookies trouvés)`)
+          challengeResolved = true
+          break
+        } else {
+          // Pas de challenge visible mais pas de cookies non plus - attendre un peu
+          console.log(`⏳ Pas de challenge visible mais pas de cookies importants, attente supplémentaire...`)
+          await page.waitForTimeout(5000)
+          
+          // Essayer de naviguer vers une autre page pour forcer la génération de cookies
+          if (attempts % 3 === 0) {
+            try {
+              console.log('🔄 Navigation vers une page différente pour forcer la génération de cookies...')
+              await page.goto('https://www.vinted.fr/how_it_works', {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
+              })
+              await page.waitForTimeout(3000)
+            } catch (e) {
+              console.log('⚠️ Navigation vers page alternative échouée, continuons...')
+            }
           }
         }
       }
@@ -175,11 +221,27 @@ async function generateCookies() {
       const initialCookies = await page.cookies('https://www.vinted.fr')
       console.log(`🍪 Cookies après navigation: ${initialCookies.length} trouvés`)
       
+      // Lister les noms de cookies pour debug
+      if (initialCookies.length > 0) {
+        console.log(`📋 Noms des cookies: ${initialCookies.map(c => c.name).join(', ')}`)
+      }
+      
       if (initialCookies.length === 0) {
         console.warn('⚠️ Aucun cookie récupéré après navigation initiale')
-        console.warn('💡 Cela peut indiquer un blocage temporaire de Vinted (rate limit)')
-        console.warn('💡 Attente supplémentaire de 10 secondes...')
-        await page.waitForTimeout(10000)
+        console.warn('💡 Cela peut indiquer un blocage temporaire de Vinted (rate limit ou IP bloquée)')
+        console.warn('💡 Attente supplémentaire de 15 secondes...')
+        await page.waitForTimeout(15000)
+        
+        // Dernière tentative : naviguer vers la page d'accueil
+        try {
+          await page.goto('https://www.vinted.fr', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          })
+          await page.waitForTimeout(5000)
+        } catch (e) {
+          console.warn('⚠️ Dernière tentative de navigation échouée')
+        }
       }
 
       // Essayer de se connecter si des credentials sont fournis (optionnel)
@@ -201,6 +263,19 @@ async function generateCookies() {
             }
           })
           
+          // Vérifier d'abord qu'on a des cookies Cloudflare avant d'essayer de se connecter
+          const cookiesBeforeLogin = await page.cookies('https://www.vinted.fr')
+          const hasCloudflareCookies = cookiesBeforeLogin.some(c => 
+            c.name.includes('cf_') || 
+            c.name.includes('__cf') ||
+            c.name === 'cf_clearance'
+          )
+          
+          if (!hasCloudflareCookies) {
+            console.warn('⚠️ Pas de cookies Cloudflare détectés avant la connexion')
+            console.warn('💡 La connexion peut échouer. Continuons quand même...')
+          }
+          
           // Essayer plusieurs URLs de login possibles
           const loginUrls = [
             'https://www.vinted.fr/users/login',
@@ -213,18 +288,25 @@ async function generateCookies() {
             try {
               console.log(`🌐 Tentative de navigation vers ${loginUrl}...`)
               await page.goto(loginUrl, {
-                waitUntil: 'networkidle2',
-                timeout: 20000,
+                waitUntil: 'domcontentloaded', // Plus permissif que networkidle2
+                timeout: 30000, // Timeout augmenté
               })
               
-              await page.waitForTimeout(2000)
+              await page.waitForTimeout(3000) // Attente augmentée
               
               // Vérifier si on est sur une page de login
               const currentUrl = page.url()
               console.log(`📍 URL actuelle: ${currentUrl}`)
               
-              // Attendre que la page soit complètement chargée
-              await page.waitForTimeout(2000)
+              // Attendre que la page soit complètement chargée et que les scripts s'exécutent
+              await page.waitForTimeout(3000)
+              
+              // Vérifier si on est toujours sur une page de challenge
+              const currentTitle = await page.title()
+              if (currentTitle.includes('Just a moment') || currentTitle.includes('Checking')) {
+                console.log('⚠️ Challenge Cloudflare détecté sur la page de login, attente...')
+                await page.waitForTimeout(10000)
+              }
               
               // Utiliser evaluate pour chercher les champs dans le DOM de manière plus robuste
               const formFields = await page.evaluate(() => {
@@ -289,13 +371,116 @@ async function generateCookies() {
                   }
                 }
                 
-                // Fallback: utiliser tous les inputs
+                // Fallback: utiliser tous les inputs avec waitForSelector
                 if (!emailField) {
-                  console.warn('⚠️ Champ email non trouvé avec sélecteur spécifique, tentative avec tous les inputs...')
-                  allInputs = await page.$$('input')
-                  if (allInputs.length > 0 && formFields.firstInputIndex !== null) {
-                    emailField = allInputs[formFields.firstInputIndex]
-                    console.log(`✅ Utilisation du premier input (index ${formFields.firstInputIndex}) comme champ email`)
+                  console.warn('⚠️ Champ email non trouvé avec sélecteur spécifique, tentative avec approche alternative...')
+                  try {
+                    // Attendre que la page soit complètement chargée
+                    await page.waitForTimeout(2000)
+                    
+                    // Essayer d'attendre qu'un input apparaisse avec plusieurs sélecteurs
+                    const inputSelectors = ['input[type="email"]', 'input[type="text"]', 'input[name*="email"]', 'input[id*="email"]', 'input']
+                    for (const selector of inputSelectors) {
+                      try {
+                        await page.waitForSelector(selector, { timeout: 3000, visible: true })
+                        allInputs = await page.$$(selector)
+                        if (allInputs.length > 0) {
+                          // Prendre le premier input visible
+                          for (const input of allInputs) {
+                            const isVisible = await input.evaluate(el => {
+                              const style = window.getComputedStyle(el)
+                              const rect = el.getBoundingClientRect()
+                              return style.display !== 'none' && 
+                                     style.visibility !== 'hidden' && 
+                                     rect.width > 0 && 
+                                     rect.height > 0 &&
+                                     !el.disabled
+                            })
+                            if (isVisible) {
+                              emailField = input
+                              console.log(`✅ Utilisation d'un input visible comme champ email (${selector})`)
+                              break
+                            }
+                          }
+                          if (emailField) break
+                        }
+                      } catch (e) {
+                        // Continuer avec le prochain sélecteur
+                      }
+                    }
+                    
+                    // Si toujours pas trouvé, essayer avec evaluate pour forcer le clic
+                    if (!emailField) {
+                      console.log('🔄 Tentative de connexion via evaluate (injection directe)...')
+                      const loginResult = await page.evaluate((email, password) => {
+                        // Trouver tous les inputs
+                        const inputs = Array.from(document.querySelectorAll('input'))
+                        const emailInput = inputs.find(input => {
+                          const type = (input.type || '').toLowerCase()
+                          const name = (input.name || '').toLowerCase()
+                          const id = (input.id || '').toLowerCase()
+                          return type === 'email' || name.includes('email') || id.includes('email')
+                        }) || inputs.find(input => input.type === 'text' && input.type !== 'password')
+                        
+                        const passwordInput = inputs.find(input => input.type === 'password')
+                        
+                        if (emailInput && passwordInput) {
+                          // Remplir les champs
+                          emailInput.value = email
+                          emailInput.dispatchEvent(new Event('input', { bubbles: true }))
+                          emailInput.dispatchEvent(new Event('change', { bubbles: true }))
+                          
+                          passwordInput.value = password
+                          passwordInput.dispatchEvent(new Event('input', { bubbles: true }))
+                          passwordInput.dispatchEvent(new Event('change', { bubbles: true }))
+                          
+                          // Trouver et cliquer sur le bouton submit
+                          const submitButton = document.querySelector('button[type="submit"]') ||
+                                              document.querySelector('button:contains("Se connecter")') ||
+                                              document.querySelector('button:contains("Log in")') ||
+                                              Array.from(document.querySelectorAll('button')).find(btn => 
+                                                btn.textContent.toLowerCase().includes('connect') ||
+                                                btn.textContent.toLowerCase().includes('login')
+                                              )
+                          
+                          if (submitButton) {
+                            submitButton.click()
+                            return { success: true, message: 'Formulaire soumis' }
+                          }
+                          return { success: false, message: 'Bouton submit non trouvé' }
+                        }
+                        return { success: false, message: 'Champs non trouvés', inputsCount: inputs.length }
+                      }, vintedEmail, vintedPassword)
+                      
+                      if (loginResult.success) {
+                        console.log('✅ Formulaire soumis via evaluate')
+                        await page.waitForTimeout(5000)
+                        // Vérifier si on a maintenant les cookies
+                        const cookiesAfter = await page.cookies('https://www.vinted.fr')
+                        if (cookiesAfter.some(c => c.name === 'access_token_web') || accessTokenDetected) {
+                          console.log('✅ access_token_web généré après soumission via evaluate!')
+                          loginSuccess = true
+                          break
+                        } else {
+                          console.warn('⚠️ Formulaire soumis mais access_token_web non détecté, attente supplémentaire...')
+                          // Attendre encore un peu
+                          for (let i = 0; i < 5; i++) {
+                            await page.waitForTimeout(2000)
+                            const cookiesCheck = await page.cookies('https://www.vinted.fr')
+                            if (cookiesCheck.some(c => c.name === 'access_token_web') || accessTokenDetected) {
+                              console.log('✅ access_token_web détecté après attente!')
+                              loginSuccess = true
+                              break
+                            }
+                          }
+                          if (loginSuccess) break
+                        }
+                      } else {
+                        console.warn(`⚠️ Échec connexion via evaluate: ${loginResult.message}`)
+                      }
+                    }
+                  } catch (e) {
+                    console.warn(`⚠️ Aucun input trouvé: ${e.message}`)
                   }
                 }
                 
@@ -497,12 +682,24 @@ async function generateCookies() {
         console.error('❌ CRITIQUE: Aucun cookie récupéré!')
         console.error('💡 Causes possibles:')
         console.error('   1. Blocage temporaire de Vinted suite à des rate limits (429)')
-        console.error('   2. IP temporairement bloquée')
-        console.error('   3. Challenge Cloudflare/Datadome non résolu')
+        console.error('   2. IP temporairement bloquée par Cloudflare/Vinted')
+        console.error('   3. Challenge Cloudflare/Datadome non résolu (peut prendre plusieurs minutes)')
+        console.error('   4. Problème réseau ou timeout')
         console.error('💡 Solutions:')
-        console.error('   - Attendre 10-30 minutes avant de réessayer')
-        console.error('   - Utiliser un VPN ou changer d\'IP')
-        console.error('   - Essayer en mode headful (headless: false) pour debug')
+        console.error('   - Attendre 30-60 minutes avant de réessayer')
+        console.error('   - Utiliser un VPN ou changer d\'IP (hotspot mobile)')
+        console.error('   - Vérifier que l\'IP du serveur Fly.io n\'est pas bloquée')
+        console.error('   - Le script continuera quand même mais les cookies seront vides')
+      } else {
+        // Vérifier si on a au moins des cookies de base même sans Cloudflare
+        const hasAnyCookies = cookies.length > 0
+        const hasCloudflare = cookies.some(c => c.name.includes('cf_') || c.name.includes('__cf'))
+        
+        if (!hasCloudflare && hasAnyCookies) {
+          console.warn('⚠️ Cookies récupérés mais pas de cookies Cloudflare (cf_clearance manquant)')
+          console.warn('💡 Les requêtes peuvent échouer avec 403 sans cookies Cloudflare')
+          console.warn('💡 Cela peut indiquer un blocage IP ou un challenge non résolu')
+        }
       }
 
       const cookieString = cookies
