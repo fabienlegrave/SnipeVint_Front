@@ -10,11 +10,8 @@
     "init:cookies": "npx tsx scripts/init-cookies.ts",
     "fetch:favorites": "npx tsx scripts/fetch-all-favorites.ts",
     "cleanup:alerts": "npx tsx scripts/cleanup-duplicate-alerts.ts",
-    "worker:alerts": "npx tsx scripts/worker-alerts.ts",
-    "worker:favorites-alerts": "npx tsx scripts/worker-favorites-alerts.ts",
     "worker:main": "npx tsx scripts/main-worker.ts",
     "test:main-worker": "npx tsx scripts/test-main-worker.ts",
-    "test:failover": "npx tsx scripts/test-failover.ts",
     "test:endpoints": "npx tsx scripts/test-vinted-endpoints.ts"
   },
   "dependencies": {
